@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QGraphicsView, QGraphics
                              QFileDialog, QVBoxLayout, QHBoxLayout, QWidget, QPushButton, 
                              QFrame, QLabel, QListWidget, QListWidgetItem, QAbstractItemView, QMessageBox)
 from PyQt6.QtGui import QPixmap, QImage, QPainter, QPainterPath, QPen, QColor, QKeySequence, QShortcut, QIcon
-from PyQt6.QtCore import Qt, QSize, QPointF
+from PyQt6.QtCore import Qt, QSize, QPointF, QPoint
 
 class DiagramViewer(QGraphicsView):
     def __init__(self):
@@ -14,12 +14,18 @@ class DiagramViewer(QGraphicsView):
         self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
         
+        # Rendimiento de renderizado en alta definición
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        self.setRenderHint(QPainter.RenderHint.LosslessImageRendering)
         self.setMouseTracking(True)
         
         self.zoom_factor = 1.15
         self.mode = "hand" 
+        
+        # Paneo temporal con botón central (rueda del ratón)
+        self.is_middle_panning = False
+        self.last_mouse_pos = QPoint()
         
         self.poly_points = []
         self.current_path = None
@@ -31,7 +37,7 @@ class DiagramViewer(QGraphicsView):
         self.set_mode_hand()
 
     def set_mode_hand(self):
-        self.finish_stroke() # Asegura cualquier trazo a medias
+        self.finish_stroke()
         self.mode = "hand"
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
 
@@ -45,7 +51,7 @@ class DiagramViewer(QGraphicsView):
         self.drawing_color = QColor(r, g, b, 120)
 
     def finish_stroke(self):
-        """ Cierra y guarda permanentemente el trazo actual en la memoria del programa """
+        """ Cierra y guarda el trazo actual """
         if self.active_path_item and len(self.poly_points) > 0:
             self.strokes_data.append({
                 "item": self.active_path_item,
@@ -62,6 +68,13 @@ class DiagramViewer(QGraphicsView):
             self.poly_points = []
 
     def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.MiddleButton:
+            self.is_middle_panning = True
+            self.last_mouse_pos = event.pos()
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            event.accept()
+            return
+
         if self.mode == "draw":
             scene_pos = self.mapToScene(event.pos())
             
@@ -83,13 +96,20 @@ class DiagramViewer(QGraphicsView):
                     self.active_path_item.setPath(self.current_path)
             
             elif event.button() == Qt.MouseButton.RightButton:
-                # Clic derecho termina el trazo de manera limpia
                 self.finish_stroke()
                     
         else:
             super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        if self.is_middle_panning:
+            delta = event.pos() - self.last_mouse_pos
+            self.last_mouse_pos = event.pos()
+            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
+            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
+            event.accept()
+            return
+
         if self.mode == "draw" and self.poly_points and self.active_path_item:
             scene_pos = self.mapToScene(event.pos())
             temp_path = QPainterPath(self.current_path)
@@ -97,6 +117,18 @@ class DiagramViewer(QGraphicsView):
             self.active_path_item.setPath(temp_path)
         else:
             super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.MiddleButton and self.is_middle_panning:
+            self.is_middle_panning = False
+            if self.mode == "draw":
+                self.setCursor(Qt.CursorShape.CrossCursor)
+            else:
+                self.setCursor(Qt.CursorShape.OpenHandCursor)
+            event.accept()
+            return
+
+        super().mouseReleaseEvent(event)
 
     def undo_last_stroke(self):
         if self.mode == "draw" and self.poly_points:
@@ -128,17 +160,33 @@ class DiagramViewer(QGraphicsView):
         self.active_path_item = None
         
         current_x = 0
+        crop_ratio = 0.02 
+        
         for file_path in file_paths:
             if not os.path.exists(file_path):
                 continue
             doc = fitz.open(file_path)
             for page in doc:
-                mat = fitz.Matrix(4, 4) 
-                pix = page.get_pixmap(matrix=mat)
+                rect = page.rect
+                crop_x = rect.width * crop_ratio
+                crop_y = rect.height * crop_ratio
+                new_cropbox = fitz.Rect(
+                    rect.x0 + crop_x,
+                    rect.y0 + crop_y,
+                    rect.x1 - crop_x,
+                    rect.y1 - crop_y
+                )
+                page.set_cropbox(new_cropbox)
+
+                # --- AUMENTO DE CALIDAD (Matriz Ultra HD 6x6) ---
+                mat = fitz.Matrix(6, 6) 
+                pix = page.get_pixmap(matrix=mat, alpha=False)
                 img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format.Format_RGB888)
                 qpixmap = QPixmap.fromImage(img)
                 
                 item = self.scene.addPixmap(qpixmap)
+                # Activar transformación suave para cada imagen individual
+                item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
                 item.setPos(current_x, 0)
                 current_x += qpixmap.width() 
 
@@ -172,7 +220,7 @@ class DiagramViewer(QGraphicsView):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Visor de Diagramas Automotrices - Pro")
+        self.setWindowTitle("Visor de Diagramas Automotrices - Ultra HD")
         self.resize(1300, 900)
 
         central_widget = QWidget()
@@ -239,15 +287,14 @@ class MainWindow(QMainWindow):
         menu_layout.addWidget(self.btn_zoom_in)
         menu_layout.addWidget(self.btn_center)
 
-        # --- ARREGLO DE LA LISTA DE MINIATURAS ---
         self.thumbnail_list = QListWidget()
-        self.thumbnail_list.setViewMode(QListWidget.ViewMode.ListMode) # Modo lista estricto
-        self.thumbnail_list.setFlow(QListWidget.Flow.LeftToRight)      # De izquierda a derecha
-        self.thumbnail_list.setWrapping(False)                         # Evita que se bajen de renglón
+        self.thumbnail_list.setViewMode(QListWidget.ViewMode.ListMode)
+        self.thumbnail_list.setFlow(QListWidget.Flow.LeftToRight)
+        self.thumbnail_list.setWrapping(False)
         self.thumbnail_list.setIconSize(QSize(100, 100))
         self.thumbnail_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
-        self.thumbnail_list.setFixedHeight(140)                        # Altura reducida
-        self.thumbnail_list.setSpacing(5)                              # Espacio reducido
+        self.thumbnail_list.setFixedHeight(140)
+        self.thumbnail_list.setSpacing(5)
         self.thumbnail_list.setStyleSheet("""
             QListWidget { background-color: #fafafa; border: 1px solid #d9d9d9; border-radius: 5px; padding: 5px; }
             QListWidget::item { background-color: white; border: 1px solid #cccccc; border-radius: 5px; padding: 2px; }
@@ -337,7 +384,7 @@ class MainWindow(QMainWindow):
                 self.toggle_thumbnails()
 
     def save_project(self):
-        self.viewer.finish_stroke() # <-- AQUÍ ESTÁ EL SEGURO PARA NO PERDER LA LÍNEA
+        self.viewer.finish_stroke()
         
         file_path, _ = QFileDialog.getSaveFileName(self, "Guardar Proyecto", "", "JSON Files (*.json)")
         if not file_path: return
