@@ -8,6 +8,15 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QGraphicsView, QGraphics
 from PyQt6.QtGui import QPixmap, QImage, QPainter, QPainterPath, QPen, QColor, QKeySequence, QShortcut, QIcon
 from PyQt6.QtCore import Qt, QSize, QPointF, QPoint
 
+# Función vital para que el .exe encuentre el icono cuando esté empaquetado
+def resource_path(relative_path):
+    """ Obtiene la ruta absoluta al recurso, funciona para desarrollo y para PyInstaller """
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
 class DiagramViewer(QGraphicsView):
     def __init__(self):
         super().__init__()
@@ -23,7 +32,6 @@ class DiagramViewer(QGraphicsView):
         self.zoom_factor = 1.15
         self.mode = "hand" 
         
-        # Paneo temporal con botón central (rueda del ratón)
         self.is_middle_panning = False
         self.last_mouse_pos = QPoint()
         
@@ -51,7 +59,6 @@ class DiagramViewer(QGraphicsView):
         self.drawing_color = QColor(r, g, b, 120)
 
     def finish_stroke(self):
-        """ Cierra y guarda el trazo actual """
         if self.active_path_item and len(self.poly_points) > 0:
             self.strokes_data.append({
                 "item": self.active_path_item,
@@ -77,7 +84,6 @@ class DiagramViewer(QGraphicsView):
 
         if self.mode == "draw":
             scene_pos = self.mapToScene(event.pos())
-            
             if event.button() == Qt.MouseButton.LeftButton:
                 if not self.poly_points:
                     self.poly_points.append((scene_pos.x(), scene_pos.y()))
@@ -97,7 +103,6 @@ class DiagramViewer(QGraphicsView):
             
             elif event.button() == Qt.MouseButton.RightButton:
                 self.finish_stroke()
-                    
         else:
             super().mousePressEvent(event)
 
@@ -127,7 +132,6 @@ class DiagramViewer(QGraphicsView):
                 self.setCursor(Qt.CursorShape.OpenHandCursor)
             event.accept()
             return
-
         super().mouseReleaseEvent(event)
 
     def undo_last_stroke(self):
@@ -163,29 +167,24 @@ class DiagramViewer(QGraphicsView):
         crop_ratio = 0.02 
         
         for file_path in file_paths:
-            if not os.path.exists(file_path):
-                continue
+            if not os.path.exists(file_path): continue
             doc = fitz.open(file_path)
             for page in doc:
                 rect = page.rect
                 crop_x = rect.width * crop_ratio
                 crop_y = rect.height * crop_ratio
                 new_cropbox = fitz.Rect(
-                    rect.x0 + crop_x,
-                    rect.y0 + crop_y,
-                    rect.x1 - crop_x,
-                    rect.y1 - crop_y
+                    rect.x0 + crop_x, rect.y0 + crop_y,
+                    rect.x1 - crop_x, rect.y1 - crop_y
                 )
                 page.set_cropbox(new_cropbox)
 
-                # --- AUMENTO DE CALIDAD (Matriz Ultra HD 6x6) ---
                 mat = fitz.Matrix(6, 6) 
                 pix = page.get_pixmap(matrix=mat, alpha=False)
                 img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format.Format_RGB888)
                 qpixmap = QPixmap.fromImage(img)
                 
                 item = self.scene.addPixmap(qpixmap)
-                # Activar transformación suave para cada imagen individual
                 item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
                 item.setPos(current_x, 0)
                 current_x += qpixmap.width() 
@@ -220,8 +219,11 @@ class DiagramViewer(QGraphicsView):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Visor de Diagramas Automotrices - Ultra HD")
+        self.setWindowTitle("Visor de Diagramas Automotrices ")
         self.resize(1300, 900)
+        
+        # ASIGNAR EL LOGO A LA VENTANA Y BARRA DE TAREAS
+        self.setWindowIcon(QIcon(resource_path("icono.ico")))
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -307,18 +309,14 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self.thumbnail_list)
         main_layout.addWidget(self.viewer)
 
-        # Conexiones
         self.btn_save_proj.clicked.connect(self.save_project)
         self.btn_load_proj.clicked.connect(self.load_project)
-        
         self.btn_add.clicked.connect(self.add_files)
         self.btn_toggle_list.clicked.connect(self.toggle_thumbnails)
         self.btn_merge.clicked.connect(self.generate_canvas)
-        
         self.btn_center.clicked.connect(self.viewer.center_view)
         self.btn_zoom_in.clicked.connect(self.viewer.zoom_in)
         self.btn_zoom_out.clicked.connect(self.viewer.zoom_out)
-        
         self.btn_hand.clicked.connect(self.activate_hand)
         self.btn_draw.clicked.connect(self.activate_draw)
         self.btn_undo.clicked.connect(self.viewer.undo_last_stroke)
@@ -385,7 +383,6 @@ class MainWindow(QMainWindow):
 
     def save_project(self):
         self.viewer.finish_stroke()
-        
         file_path, _ = QFileDialog.getSaveFileName(self, "Guardar Proyecto", "", "JSON Files (*.json)")
         if not file_path: return
         
@@ -401,14 +398,9 @@ class MainWindow(QMainWindow):
                 "points": stroke["points"]
             })
             
-        data = {
-            "pdfs": ordered_paths,
-            "strokes": clean_strokes
-        }
-        
+        data = {"pdfs": ordered_paths, "strokes": clean_strokes}
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=4)
-            
         QMessageBox.information(self, "Éxito", "Proyecto guardado correctamente.")
 
     def load_project(self):
@@ -425,6 +417,8 @@ class MainWindow(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    # Icono general para la aplicación
+    app.setWindowIcon(QIcon(resource_path("icono.ico")))
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
